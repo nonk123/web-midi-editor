@@ -1,13 +1,12 @@
 body {
     margin: 0;
     padding: 0;
-    overflow: hidden;
     width: 100vw;
     height: 100vh;
-    --top-bar-height: 70px;
-    --project-panel-width: 400px;
-    --piano-roll-width: calc(100% - var(--project-panel-width));
-    --main-height: calc(100% - var(--top-bar-height));
+    background: var(--background);
+    --top-bar-height: 75px;
+    --piano-keys-width: 50px;
+    --piano-key-height: 30px;
     --background: #242936;
     --background-dark: #1f2430;
     --border-color: #171b24;
@@ -20,34 +19,10 @@ body {
     font-family: Arial, Helvetica, sans-serif;
 }
 
-#top-bar {
-    height: var(--top-bar-height);
-    padding: 3px;
-}
-
-#main-view {
-    width: 100%;
-    height: var(--main-height);
-    background: var(--background);
-}
-
-#piano-roll {
-    width: var(--piano-roll-width);
-}
-
-#project-panel {
-    width: var(--project-panel-width);
-    height: var(--main-height);
-}
-
 select, input, button {
-    background: var(--background);
+    background: var(--background-dark);
     border: 2px solid var(--border-color);
     border-radius: 3px;
-}
-
-button {
-    background: var(--background-dark);
 }
 
 .frame {
@@ -71,6 +46,10 @@ button {
     gap: 5px;
 }
 
+.no-gap {
+    gap: 0;
+}
+
 .h-box, .v-box {
     align-items: center;
 }
@@ -85,4 +64,82 @@ button {
 
 .full-width {
     width: 100%;
+}
+
+.white-key, .black-key {
+    border: none;
+    height: var(--piano-key-height);
+    width: var(--piano-keys-width);
+    text-align: center;
+    border-radius: 0 5px 5px 0;
+}
+
+.white-key {
+    background: white;
+    color: black;
+    border: 1px solid black;
+}
+
+.black-key {
+    background: black;
+    color: white;
+}
+
+
+#top-bar {
+    position: fixed;
+    top: 0;
+    height: var(--top-bar-height);
+}
+
+#project-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+}
+
+#top-bar, #project-panel {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+#top-bar {
+    border-bottom-left-radius: 0;
+}
+
+#project-panel {
+    border-bottom-right-radius: 0;
+}
+
+#piano-view {
+    display: grid;
+    width: 100vw;
+    position: absolute;
+    left: 0;
+    top: var(--top-bar-height);
+    align-items: flex-start;
+}
+
+#piano-keys {
+    grid-area: 1 / 1;
+}
+
+#note-lines, #measure-lines, #clickable-area, #piano-notes {
+    grid-area: 1 / 2;
+}
+
+#piano-keys, #note-lines, #measure-lines, #clickable-area, #piano-notes {
+    background: transparent;
+}
+
+#clickable-area {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+#piano-keys {
+    position: sticky;
+    left: 0;
+    width: var(--piano-keys-width);
 }

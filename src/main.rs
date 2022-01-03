@@ -1,22 +1,23 @@
 use js_sys::Array;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
-use web_sys::{HtmlInputElement, HtmlSelectElement, MidiAccess, MidiOutput};
+use web_sys::{HtmlElement, HtmlInputElement, HtmlSelectElement, MidiAccess, MidiOutput};
 use yew::{
-    events::{Event, InputEvent},
+    events::{Event, InputEvent, MouseEvent},
     prelude::*,
 };
 
 mod project;
 mod util;
 
-use crate::{
-    project::{Project, TimeSignature, Track},
-    util::{select_get_value, time_signature_options},
+use project::{
+    Note, Project, TimeSignature, Track, MIN_DIVISION, MIN_INTERVAL, NOTE_EDGE_WIDTH,
+    NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH,
 };
+use util::{note_name, relative_mouse_pos, select_get_value, snap, time_signature_options};
 
 enum Msg {
-    GrantMidiAccess(MidiAccess),
-    RefuseMidiAccess,
+    MidiAccessGranted(MidiAccess),
+    MidiAccessRefused,
     SetOutputDevice(MidiOutput),
     SelectTrack(usize),
     DeselectTrack,
@@ -24,9 +25,14 @@ enum Msg {
     DeleteSelectedTrack,
     RenameSelectedTrack(String),
     SetSelectedTrackInstrument(u8),
+    SetProjectName(String),
     SetBpm(u32),
     SetTimeSignatureTop(u32),
     SetTimeSignatureBottom(u32),
+    PianoRollMouseDown(MouseEvent),
+    PianoRollMouseUp,
+    PianoRollMouseMove(MouseEvent),
+    PlaySingleNote(u8),
 }
 
 struct Model {
@@ -34,6 +40,9 @@ struct Model {
     selected_output: Option<MidiOutput>,
     project: Project,
     selected_track_index: Option<usize>,
+    note_operation: Option<NoteOperation>,
+    piano_roll_area: NodeRef,
+    last_placed_note_length: f64,
     _success_closure: Closure<dyn FnMut(JsValue)>,
     _fail_closure: Closure<dyn FnMut(JsValue)>,
 }
@@ -53,13 +62,13 @@ impl Component for Model {
                 .dyn_into::<MidiAccess>()
                 .expect("dyn_into::<MidiAccess>");
 
-            link.send_message(Msg::GrantMidiAccess(midi_access));
+            link.send_message(Msg::MidiAccessGranted(midi_access));
         }) as Box<dyn FnMut(JsValue)>);
 
         let link = ctx.link().clone();
 
         let fail = Closure::wrap(Box::new(move |_error: JsValue| {
-            link.send_message(Msg::RefuseMidiAccess);
+            link.send_message(Msg::MidiAccessRefused);
         }) as Box<dyn FnMut(JsValue)>);
 
         let _ = navigator
@@ -68,7 +77,7 @@ impl Component for Model {
             .then2(&success, &fail);
 
         let project = Project {
-            name: "My Project".to_string(),
+            name: "Untitled".to_string(),
             time_signature: TimeSignature { top: 4, bottom: 4 },
             bpm: 120,
             tracks: Vec::new(),
@@ -79,6 +88,9 @@ impl Component for Model {
             selected_output: None,
             project,
             selected_track_index: None,
+            note_operation: None,
+            piano_roll_area: NodeRef::default(),
+            last_placed_note_length: 1.0 / 8.0,
             _success_closure: success,
             _fail_closure: fail,
         }
@@ -86,7 +98,7 @@ impl Component for Model {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::GrantMidiAccess(midi_access) => {
+            Msg::MidiAccessGranted(midi_access) => {
                 self.midi_access = Some(midi_access);
 
                 self.selected_output = {
@@ -99,9 +111,11 @@ impl Component for Model {
                     }
                 };
 
+                ctx.link().send_message(Msg::CreateTrack);
+
                 true
             }
-            Msg::RefuseMidiAccess => {
+            Msg::MidiAccessRefused => {
                 self.midi_access = None;
                 self.selected_output = None;
 
@@ -115,23 +129,22 @@ impl Component for Model {
             }
             Msg::SelectTrack(index) => {
                 self.selected_track_index = Some(index);
-
                 true
             }
             Msg::DeselectTrack => {
                 self.selected_track_index = None;
-
                 true
             }
             Msg::CreateTrack => {
+                let len = self.project.tracks.len();
+
                 self.project.tracks.push(Track {
-                    name: format!("Track {}", self.project.tracks.len() + 1),
+                    name: format!("Track {}", len + 1),
                     notes: Vec::new(),
                     instrument: 0,
                 });
 
-                let index = self.project.tracks.len() - 1;
-                ctx.link().send_message(Msg::SelectTrack(index));
+                ctx.link().send_message(Msg::SelectTrack(len));
 
                 true
             }
@@ -153,28 +166,183 @@ impl Component for Model {
             }
             Msg::RenameSelectedTrack(name) => {
                 self.act_on_selected_track_mut(|track| track.name = name.to_string());
-
                 true
             }
             Msg::SetSelectedTrackInstrument(instrument) => {
                 self.act_on_selected_track_mut(|track| track.instrument = instrument);
-
+                true
+            }
+            Msg::SetProjectName(name) => {
+                self.project.name = name.to_string();
                 true
             }
             Msg::SetBpm(bpm) => {
                 self.project.bpm = bpm;
-
                 true
             }
             Msg::SetTimeSignatureTop(top) => {
                 self.project.time_signature.top = top;
-
                 true
             }
             Msg::SetTimeSignatureBottom(bottom) => {
                 self.project.time_signature.bottom = bottom;
-
                 true
+            }
+            Msg::PianoRollMouseDown(event) => {
+                if self.note_operation.is_some() {
+                    false
+                } else if let Some(index) = self.selected_track_index {
+                    let track = &mut self.project.tracks[index];
+                    let (mouse_x, mouse_y) = relative_mouse_pos(&event);
+
+                    match event.buttons() {
+                        1 => {
+                            let existing_note_index = track.get_note_at_position(mouse_x, mouse_y);
+
+                            if let Some(index) = existing_note_index {
+                                let note = &track.notes[index];
+
+                                self.note_operation = Some(NoteOperation {
+                                    note_index: index,
+                                    type_: {
+                                        if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH {
+                                            NoteOperationType::DragLeftEdge
+                                        } else if mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH {
+                                            NoteOperationType::DragRightEdge
+                                        } else {
+                                            NoteOperationType::Move
+                                        }
+                                    },
+                                })
+                            } else {
+                                let len = track.notes.len();
+
+                                let pitch = 127.0 - mouse_y / NOTE_RECT_HEIGHT;
+
+                                track.notes.push(Note {
+                                    pitch: pitch.clamp(0.0, 127.0).ceil() as u8,
+                                    velocity: 127,
+                                    offset: snap(mouse_x / WHOLE_NOTE_WIDTH, 1.0 / 16.0),
+                                    length: self.last_placed_note_length,
+                                });
+
+                                self.note_operation = Some(NoteOperation {
+                                    note_index: len,
+                                    type_: NoteOperationType::Move,
+                                });
+                            }
+
+                            true
+                        }
+                        2 => track.remove_note_at_position(mouse_x, mouse_y).is_some(),
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            }
+            Msg::PianoRollMouseUp => {
+                self.note_operation = None;
+                true
+            }
+            Msg::PianoRollMouseMove(event) => {
+                let (mouse_x, mouse_y) = relative_mouse_pos(&event);
+
+                match event.buttons() {
+                    1 => {
+                        if let Some(note_operation) = &self.note_operation {
+                            if let Some(index) = self.selected_track_index {
+                                let track = &mut self.project.tracks[index];
+                                let note = &mut track.notes[note_operation.note_index];
+
+                                let offset = snap(mouse_x / WHOLE_NOTE_WIDTH, MIN_INTERVAL);
+
+                                let pitch = 127
+                                    - (mouse_y / NOTE_RECT_HEIGHT - 0.5).round().clamp(0.0, 127.0)
+                                        as u8;
+
+                                match note_operation.type_ {
+                                    NoteOperationType::Move => {
+                                        note.offset = offset;
+                                        note.pitch = pitch;
+                                    }
+                                    NoteOperationType::DragLeftEdge => {
+                                        let offset =
+                                            offset.min(note.offset + note.length - MIN_INTERVAL);
+
+                                        note.length += note.offset - offset;
+                                        note.offset = offset;
+                                    }
+                                    NoteOperationType::DragRightEdge => {
+                                        let offset =
+                                            offset.max(note.offset - note.length + MIN_INTERVAL);
+
+                                        note.length = offset - note.offset + MIN_INTERVAL;
+                                    }
+                                }
+
+                                if note.length < 1e-4 {
+                                    note.length = MIN_INTERVAL;
+                                }
+
+                                self.last_placed_note_length = note.length;
+
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    2 => {
+                        self.act_on_selected_track_mut(|track| {
+                            track.remove_note_at_position(mouse_x, mouse_y)
+                        });
+
+                        true
+                    }
+                    _ => {
+                        if self.note_operation.is_none() {
+                            self.act_on_selected_track(|track| {
+                                self.piano_roll_area
+                                    .cast::<HtmlElement>()
+                                    .map(|piano_roll_area| {
+                                        let mut cursor = "auto";
+
+                                        for note in &track.notes {
+                                            if mouse_x < note.screen_x()
+                                                || mouse_x > note.right_edge()
+                                                || mouse_y < note.screen_y()
+                                                || mouse_y > note.bottom_edge()
+                                            {
+                                                continue;
+                                            }
+
+                                            if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH
+                                                || mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH
+                                            {
+                                                cursor = "ew-resize";
+                                                break;
+                                            } else {
+                                                cursor = "move";
+                                                break;
+                                            }
+                                        }
+
+                                        piano_roll_area.style().set_property("cursor", cursor).ok();
+                                        false
+                                    });
+                            });
+                        }
+
+                        false
+                    }
+                }
+            }
+            Msg::PlaySingleNote(pitch) => {
+                self.play_note(pitch, 1000);
+                false
             }
         }
     }
@@ -183,13 +351,9 @@ impl Component for Model {
         if self.midi_access.is_some() {
             html! {
                 <>
+                    { self.view_piano_roll(ctx) }
                     { self.view_top_bar(ctx) }
-                    <div id="main-view">
-                        <div class="h-box">
-                            { self.view_piano_roll(ctx) }
-                            { self.view_track_panel(ctx) }
-                        </div>
-                    </div>
+                    { self.view_track_panel(ctx) }
                 </>
             }
         } else {
@@ -238,8 +402,8 @@ impl Model {
 
     fn view_top_bar(&self, ctx: &Context<Self>) -> Html {
         html! {
-            <div id="top-bar" class="dark">
-                <div class="h-box dark">
+            <div id="top-bar" class="frame dark">
+                <div class="h-box">
                     { self.view_bpm(ctx) }
                     { self.view_time_signature(ctx) }
                     { self.view_output_selection(ctx) }
@@ -261,8 +425,8 @@ impl Model {
         html! {
             <div class="v-box frame">
                 <span>{ "BPM" }</span>
-                <input type={ "number" } value={ self.project.bpm.to_string() }
-                       min={ "1" } max={ "5000" } size={ "5" } { oninput }/>
+                <input type="number" value={ self.project.bpm.to_string() }
+                       min="1" max="5000" size="5" { oninput }/>
             </div>
         }
     }
@@ -360,30 +524,28 @@ impl Model {
         }
     }
 
-    fn view_piano_roll(&self, _ctx: &Context<Self>) -> Html {
-        html! {
-            <div id="piano-roll">
-                <span>{ "Hello, world!" }</span>
-            </div>
-        }
-    }
-
     fn view_track_panel(&self, ctx: &Context<Self>) -> Html {
         html! {
-            <div id="project-panel" class="v-box frame">
-                { self.view_project_info() }
+            <div id="project-panel" class="v-box frame dark">
+                { self.view_project_info(ctx) }
                 { self.view_track_select(ctx) }
                 { self.view_track_info(ctx) }
             </div>
         }
     }
 
-    fn view_project_info(&self) -> Html {
+    fn view_project_info(&self, ctx: &Context<Self>) -> Html {
+        let change_project_name = ctx.link().batch_callback(|event: InputEvent| {
+            event
+                .target_dyn_into::<HtmlInputElement>()
+                .and_then(|input| Some(Msg::SetProjectName(input.value())))
+        });
+
         html! {
             <div class="v-box-left frame full-width">
                 <div class="full-width">
                     <span>{ "Project: " }</span>
-                    { self.project.name.to_string() }
+                    <input value={ self.project.name.to_string() } oninput={ change_project_name }/>
                 </div>
             </div>
         }
@@ -414,22 +576,21 @@ impl Model {
         let create = ctx.link().callback(|_| Msg::CreateTrack);
         let delete = ctx.link().callback(|_| Msg::DeleteSelectedTrack);
 
+        let tracks = if self.project.tracks.is_empty() {
+            html! {
+                <span>{ "No tracks" }</span>
+            }
+        } else {
+            html! {
+                <select onchange={ on_select }>
+                    { for tracks }
+                </select>
+            }
+        };
+
         html! {
             <div class="v-box-left frame full-width">
-                <span>{ "Tracks:" }</span>
-                {
-                    if self.project.tracks.is_empty() {
-                        html! {
-                            <span>{ "Empty" }</span>
-                        }
-                    } else {
-                        html! {
-                            <select required=true onchange={ on_select }>
-                                { for tracks }
-                            </select>
-                        }
-                    }
-                }
+                { tracks }
                 <div class="h-box full-width">
                     <button onclick={ create }>{ "Create" }</button>
                     <button onclick={ delete }>{ "Delete" }</button>
@@ -472,9 +633,9 @@ impl Model {
                         </div>
                         <div class="h-box full-width">
                             <span>{ "Instrument: "}</span>
-                            <input type={ "number" } value={ (track.instrument + 1).to_string() }
-                                   min={ "1" } max={ "128" } oninput={ on_track_instrument_input }
-                                   size={ "3" }/>
+                            <input type="number" value={ (track.instrument + 1).to_string() }
+                                   min="1" max="128" oninput={ on_track_instrument_input }
+                                   size="3"/>
                         </div>
                     </>
                 }
@@ -490,6 +651,139 @@ impl Model {
                 { body }
             </div>
         }
+    }
+
+    fn view_piano_roll(&self, ctx: &Context<Self>) -> Html {
+        let onmousedown = ctx
+            .link()
+            .callback(|event: MouseEvent| Msg::PianoRollMouseDown(event));
+
+        let onmouseup = ctx.link().callback(|_: MouseEvent| Msg::PianoRollMouseUp);
+
+        let onmousemove = ctx
+            .link()
+            .callback(|event: MouseEvent| Msg::PianoRollMouseMove(event));
+
+        let oncontextmenu = |event: MouseEvent| event.prevent_default();
+
+        let width = 10000.0;
+
+        html! {
+            <div id="piano-view" class="h-box no-gap" style={ format!("width: {}px;", width) }>
+                <svg id="note-lines" width="100%" height="100%">
+                    { for self.view_note_lines() }
+                </svg>
+                <svg id="measure-lines" width="100%" height="100%">
+                    { for self.view_measure_lines(width) }
+                </svg>
+                <div id="piano-keys" class="v-box-left no-gap">
+                    { for self.view_piano_keys(ctx) }
+                </div>
+                <svg id="piano-notes" width="100%" height="100%">
+                    { for self.view_notes() }
+                </svg>
+                <div ref={ self.piano_roll_area.clone() } id="clickable-area"
+                     { onmousedown } { onmouseup } { onmousemove }
+                     { oncontextmenu }/>
+            </div>
+        }
+    }
+
+    fn view_note_lines(&self) -> Vec<Html> {
+        (0..128)
+            .map(|pitch| {
+                let x1 = "0";
+                let y1 = ((pitch as f64 * NOTE_RECT_HEIGHT + 1.0) as u32).to_string();
+
+                let x2 = "100%";
+                let y2 = y1.to_string();
+
+                html! {
+                    <line { x1 } { y1 } { x2 } { y2 } stroke="black" stroke-width="1"/>
+                }
+            })
+            .collect()
+    }
+
+    fn view_measure_lines(&self, width: f64) -> Vec<Html> {
+        let mut measure_lines = Vec::new();
+
+        let division_width = WHOLE_NOTE_WIDTH / MIN_DIVISION as f64;
+
+        let mut measure_progress = 0;
+        let mut x = 0.0;
+
+        while x <= width {
+            let time_sig = &self.project.time_signature;
+
+            let stroke_width = {
+                if measure_progress % (time_sig.top * MIN_DIVISION / time_sig.bottom) == 0 {
+                    "4"
+                } else {
+                    "1"
+                }
+            };
+
+            {
+                let x = x.round() as i32;
+
+                measure_lines.push(html! {
+                    <line x1={ x.to_string() } x2={ x.to_string() } y1="0" y2="100%"
+                          stroke="black" stroke-width={ stroke_width }/>
+                });
+            }
+
+            x += division_width;
+            measure_progress += 1;
+        }
+
+        measure_lines
+    }
+
+    fn view_piano_keys(&self, ctx: &Context<Self>) -> Vec<Html> {
+        (0..=127)
+            .map(|pitch| {
+                // Start from the top.
+                let pitch = 127 - pitch;
+
+                let onclick = ctx
+                    .link()
+                    .callback(move |_: MouseEvent| Msg::PlaySingleNote(pitch));
+
+                let note_name = note_name(pitch);
+
+                let class = if note_name.contains('#') {
+                    "black-key"
+                } else {
+                    "white-key"
+                };
+
+                html! {
+                    <button { class } { onclick }>{ note_name.to_string() }</button>
+                }
+            })
+            .collect()
+    }
+
+    fn view_notes(&self) -> Vec<Html> {
+        self.act_on_selected_track(|track| {
+            track
+                .notes
+                .iter()
+                .map(|note| {
+                    let x = note.screen_x().to_string();
+                    let y = note.screen_y().to_string();
+                    let width = note.screen_width().to_string();
+                    let height = note.screen_height().to_string();
+
+                    html! {
+                        <rect { x } { y } { width } { height } rx="3" ry="3"
+                              stroke="black" stroke-width="2" fill="green"/>
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or(Vec::new())
     }
 
     fn act_on_selected_track<R>(&self, action: impl Fn(&Track) -> R) -> Option<R> {
@@ -523,6 +817,17 @@ impl Model {
             .send_with_timestamp(&note_off_message, duration as _)
             .ok();
     }
+}
+
+struct NoteOperation {
+    note_index: usize,
+    type_: NoteOperationType,
+}
+
+enum NoteOperationType {
+    DragLeftEdge,
+    DragRightEdge,
+    Move,
 }
 
 fn main() {
