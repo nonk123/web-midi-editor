@@ -6,21 +6,6 @@ pub const MIN_DIVISION: u32 = 16;
 pub const MIN_INTERVAL: f64 = 1.0 / MIN_DIVISION as f64;
 
 #[derive(Clone)]
-pub enum Action {
-    RenameProject(String),
-    SetBpm(u32),
-    SetTimeSignatureTop(u32),
-    SetTimeSignatureBottom(u32),
-    CreateTrack(Track),
-    DeleteTrack(usize),
-    RenameTrack(usize, String),
-    SetTrackInstrument(usize, u8),
-    CreateNote(usize, Note),
-    DeleteNote(usize, usize),
-    EditNote(usize, usize, f64, u8, f64),
-}
-
-#[derive(Clone)]
 pub struct Project {
     pub name: String,
     pub time_signature: TimeSignature,
