@@ -2,6 +2,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlSelectElement};
 use yew::prelude::*;
 
+use crate::project::{MIN_INTERVAL, WHOLE_NOTE_WIDTH};
+
 pub fn time_signature_options(values: &[u32]) -> Vec<Html> {
     values
         .iter()
@@ -50,4 +52,8 @@ pub fn relative_mouse_pos(event: &MouseEvent) -> (f64, f64) {
             (mouse_x, mouse_y)
         })
         .unwrap_or((0.0, 0.0))
+}
+
+pub fn mouse_x_to_interval(mouse_x: f64) -> f64 {
+    snap(mouse_x / WHOLE_NOTE_WIDTH, MIN_INTERVAL)
 }

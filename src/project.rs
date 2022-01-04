@@ -5,6 +5,22 @@ pub const NOTE_EDGE_WIDTH: f64 = 6.0;
 pub const MIN_DIVISION: u32 = 16;
 pub const MIN_INTERVAL: f64 = 1.0 / MIN_DIVISION as f64;
 
+#[derive(Clone)]
+pub enum Action {
+    RenameProject(String),
+    SetBpm(u32),
+    SetTimeSignatureTop(u32),
+    SetTimeSignatureBottom(u32),
+    CreateTrack(Track),
+    DeleteTrack(usize),
+    RenameTrack(usize, String),
+    SetTrackInstrument(usize, u8),
+    CreateNote(usize, Note),
+    DeleteNote(usize, usize),
+    EditNote(usize, usize, f64, u8, f64),
+}
+
+#[derive(Clone)]
 pub struct Project {
     pub name: String,
     pub time_signature: TimeSignature,
@@ -12,11 +28,13 @@ pub struct Project {
     pub tracks: Vec<Track>,
 }
 
+#[derive(Clone)]
 pub struct TimeSignature {
     pub top: u32,
     pub bottom: u32,
 }
 
+#[derive(Clone)]
 pub struct Track {
     pub name: String,
     pub notes: Vec<Note>,
@@ -45,16 +63,9 @@ impl Track {
 
         result
     }
-
-    pub fn remove_note_at_position(&mut self, x: f64, y: f64) -> Option<Note> {
-        if let Some(index) = self.get_note_at_position(x, y) {
-            Some(self.notes.remove(index))
-        } else {
-            None
-        }
-    }
 }
 
+#[derive(Clone)]
 pub struct Note {
     pub pitch: u8,
     pub velocity: u8,

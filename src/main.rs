@@ -10,10 +10,13 @@ mod project;
 mod util;
 
 use project::{
-    Note, Project, TimeSignature, Track, MIN_DIVISION, MIN_INTERVAL, NOTE_EDGE_WIDTH,
+    Action, Note, Project, TimeSignature, Track, MIN_DIVISION, MIN_INTERVAL, NOTE_EDGE_WIDTH,
     NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH,
 };
-use util::{note_name, relative_mouse_pos, select_get_value, snap, time_signature_options};
+use util::{
+    mouse_x_to_interval, note_name, relative_mouse_pos, select_get_value, snap,
+    time_signature_options,
+};
 
 enum Msg {
     MidiAccessGranted(MidiAccess),
@@ -33,6 +36,8 @@ enum Msg {
     PianoRollMouseUp,
     PianoRollMouseMove(MouseEvent),
     PlaySingleNote(u8),
+    Undo,
+    Redo,
 }
 
 struct Model {
@@ -43,6 +48,8 @@ struct Model {
     note_operation: Option<NoteOperation>,
     piano_roll_area: NodeRef,
     last_placed_note_length: f64,
+    undo_stack: Vec<Action>,
+    redo_stack: Vec<Action>,
     _success_closure: Closure<dyn FnMut(JsValue)>,
     _fail_closure: Closure<dyn FnMut(JsValue)>,
 }
@@ -91,6 +98,8 @@ impl Component for Model {
             note_operation: None,
             piano_roll_area: NodeRef::default(),
             last_placed_note_length: 1.0 / 8.0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             _success_closure: success,
             _fail_closure: fail,
         }
@@ -138,19 +147,17 @@ impl Component for Model {
             Msg::CreateTrack => {
                 let len = self.project.tracks.len();
 
-                self.project.tracks.push(Track {
+                self.perform_action(Action::CreateTrack(Track {
                     name: format!("Track {}", len + 1),
                     notes: Vec::new(),
                     instrument: 0,
-                });
-
-                ctx.link().send_message(Msg::SelectTrack(len));
+                }));
 
                 true
             }
             Msg::DeleteSelectedTrack => {
                 if let Some(index) = self.selected_track_index {
-                    self.project.tracks.remove(index);
+                    self.perform_action(Action::DeleteTrack(index));
 
                     if self.project.tracks.len() >= 1 {
                         let index = if index == 0 { 0 } else { index - 1 };
@@ -165,52 +172,68 @@ impl Component for Model {
                 }
             }
             Msg::RenameSelectedTrack(name) => {
-                self.act_on_selected_track_mut(|track| track.name = name.to_string());
+                if let Some(index) = self.selected_track_index {
+                    self.perform_action(Action::RenameTrack(index, name))
+                }
+
                 true
             }
             Msg::SetSelectedTrackInstrument(instrument) => {
-                self.act_on_selected_track_mut(|track| track.instrument = instrument);
+                if let Some(index) = self.selected_track_index {
+                    self.perform_action(Action::SetTrackInstrument(index, instrument));
+                }
+
                 true
             }
             Msg::SetProjectName(name) => {
-                self.project.name = name.to_string();
+                self.perform_action(Action::RenameProject(name));
                 true
             }
             Msg::SetBpm(bpm) => {
-                self.project.bpm = bpm;
+                self.perform_action(Action::SetBpm(bpm));
                 true
             }
             Msg::SetTimeSignatureTop(top) => {
-                self.project.time_signature.top = top;
+                self.perform_action(Action::SetTimeSignatureTop(top));
                 true
             }
             Msg::SetTimeSignatureBottom(bottom) => {
-                self.project.time_signature.bottom = bottom;
+                self.perform_action(Action::SetTimeSignatureBottom(bottom));
                 true
             }
             Msg::PianoRollMouseDown(event) => {
                 if self.note_operation.is_some() {
                     false
-                } else if let Some(index) = self.selected_track_index {
-                    let track = &mut self.project.tracks[index];
+                } else if let Some(track_index) = self.selected_track_index {
+                    let track = &mut self.project.tracks[track_index];
+
                     let (mouse_x, mouse_y) = relative_mouse_pos(&event);
 
                     match event.buttons() {
                         1 => {
                             let existing_note_index = track.get_note_at_position(mouse_x, mouse_y);
 
-                            if let Some(index) = existing_note_index {
-                                let note = &track.notes[index];
+                            if let Some(note_index) = existing_note_index {
+                                let note = &track.notes[note_index];
 
                                 self.note_operation = Some(NoteOperation {
-                                    note_index: index,
+                                    note_index,
                                     type_: {
                                         if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH {
-                                            NoteOperationType::DragLeftEdge
+                                            NoteOperationType::DragLeftEdge(
+                                                note.offset,
+                                                note.length,
+                                            )
                                         } else if mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH {
-                                            NoteOperationType::DragRightEdge
+                                            NoteOperationType::DragRightEdge(note.length)
                                         } else {
-                                            NoteOperationType::Move
+                                            let grab_offset = mouse_x_to_interval(mouse_x);
+
+                                            NoteOperationType::Move(
+                                                grab_offset - note.offset,
+                                                note.offset,
+                                                note.pitch,
+                                            )
                                         }
                                     },
                                 })
@@ -218,23 +241,33 @@ impl Component for Model {
                                 let len = track.notes.len();
 
                                 let pitch = 127.0 - mouse_y / NOTE_RECT_HEIGHT;
+                                let pitch = pitch.clamp(0.0, 127.0).ceil() as u8;
+
+                                let offset = snap(mouse_x / WHOLE_NOTE_WIDTH, 1.0 / 16.0);
 
                                 track.notes.push(Note {
-                                    pitch: pitch.clamp(0.0, 127.0).ceil() as u8,
+                                    pitch,
                                     velocity: 127,
-                                    offset: snap(mouse_x / WHOLE_NOTE_WIDTH, 1.0 / 16.0),
+                                    offset,
                                     length: self.last_placed_note_length,
                                 });
 
                                 self.note_operation = Some(NoteOperation {
                                     note_index: len,
-                                    type_: NoteOperationType::Move,
+                                    type_: NoteOperationType::CreateAndMove,
                                 });
                             }
 
                             true
                         }
-                        2 => track.remove_note_at_position(mouse_x, mouse_y).is_some(),
+                        2 => {
+                            if let Some(note_index) = track.get_note_at_position(mouse_x, mouse_y) {
+                                self.perform_action(Action::DeleteNote(track_index, note_index));
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         _ => false,
                     }
                 } else {
@@ -242,7 +275,53 @@ impl Component for Model {
                 }
             }
             Msg::PianoRollMouseUp => {
+                if let Some(note_operation) = self.note_operation.clone() {
+                    if let Some(selected_track_index) = self.selected_track_index {
+                        let track = &mut self.project.tracks[selected_track_index];
+                        let note = &mut track.notes[note_operation.note_index];
+
+                        let new_offset = note.offset;
+                        let new_pitch = note.pitch;
+                        let new_length = note.length;
+
+                        let mut create_note_instead = None;
+
+                        match note_operation.type_ {
+                            NoteOperationType::DragLeftEdge(offset, length) => {
+                                note.offset = offset;
+                                note.length = length;
+                            }
+                            NoteOperationType::DragRightEdge(length) => {
+                                note.length = length;
+                            }
+                            NoteOperationType::Move(_, offset, pitch) => {
+                                note.offset = offset;
+                                note.pitch = pitch;
+                            }
+                            NoteOperationType::CreateAndMove => {
+                                let mut note = track.notes.remove(note_operation.note_index);
+                                note.offset = new_offset;
+                                note.pitch = new_pitch;
+                                create_note_instead = Some(note);
+                            }
+                        }
+
+                        if let Some(note) = create_note_instead {
+                            self.perform_action(Action::CreateNote(selected_track_index, note));
+                        } else {
+                            self.perform_action(Action::EditNote(
+                                selected_track_index,
+                                note_operation.note_index,
+                                new_offset,
+                                new_pitch,
+                                new_length,
+                            ));
+                        }
+                    }
+                }
+
                 self.note_operation = None;
+
                 true
             }
             Msg::PianoRollMouseMove(event) => {
@@ -255,25 +334,29 @@ impl Component for Model {
                                 let track = &mut self.project.tracks[index];
                                 let note = &mut track.notes[note_operation.note_index];
 
-                                let offset = snap(mouse_x / WHOLE_NOTE_WIDTH, MIN_INTERVAL);
+                                let offset = mouse_x_to_interval(mouse_x);
 
                                 let pitch = 127
                                     - (mouse_y / NOTE_RECT_HEIGHT - 0.5).round().clamp(0.0, 127.0)
                                         as u8;
 
                                 match note_operation.type_ {
-                                    NoteOperationType::Move => {
+                                    NoteOperationType::Move(grab_offset, _, _) => {
+                                        note.offset = offset - grab_offset;
+                                        note.pitch = pitch;
+                                    }
+                                    NoteOperationType::CreateAndMove => {
                                         note.offset = offset;
                                         note.pitch = pitch;
                                     }
-                                    NoteOperationType::DragLeftEdge => {
+                                    NoteOperationType::DragLeftEdge(_, _) => {
                                         let offset =
                                             offset.min(note.offset + note.length - MIN_INTERVAL);
 
                                         note.length += note.offset - offset;
                                         note.offset = offset;
                                     }
-                                    NoteOperationType::DragRightEdge => {
+                                    NoteOperationType::DragRightEdge(_) => {
                                         let offset =
                                             offset.max(note.offset - note.length + MIN_INTERVAL);
 
@@ -296,11 +379,23 @@ impl Component for Model {
                         }
                     }
                     2 => {
-                        self.act_on_selected_track_mut(|track| {
-                            track.remove_note_at_position(mouse_x, mouse_y)
-                        });
+                        if let Some(selected_track_index) = self.selected_track_index {
+                            let track = &mut self.project.tracks[selected_track_index];
+                            let note_index = track.get_note_at_position(mouse_x, mouse_y);
 
-                        true
+                            if let Some(note_index) = note_index {
+                                self.perform_action(Action::DeleteNote(
+                                    selected_track_index,
+                                    note_index,
+                                ));
+
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                     _ => {
                         if self.note_operation.is_none() {
@@ -344,6 +439,14 @@ impl Component for Model {
                 self.play_note(pitch, 1000);
                 false
             }
+            Msg::Undo => {
+                self.undo_last();
+                true
+            }
+            Msg::Redo => {
+                self.redo_last();
+                true
+            }
         }
     }
 
@@ -363,6 +466,111 @@ impl Component for Model {
 }
 
 impl Model {
+    fn perform_action(&mut self, action: Action) {
+        let inverse = self.perform_action_impl(action);
+        self.undo_stack.push(inverse);
+    }
+
+    fn perform_action_impl(&mut self, action: Action) -> Action {
+        match action {
+            Action::RenameProject(new_name) => {
+                let old_name = self.project.name.clone();
+                self.project.name = new_name;
+                Action::RenameProject(old_name)
+            }
+            Action::SetBpm(new_bpm) => {
+                let old_bpm = self.project.bpm;
+                self.project.bpm = new_bpm;
+                Action::SetBpm(old_bpm)
+            }
+            Action::SetTimeSignatureTop(top) => {
+                let old_top = self.project.time_signature.top;
+                self.project.time_signature.top = top;
+                Action::SetTimeSignatureTop(old_top)
+            }
+            Action::SetTimeSignatureBottom(bottom) => {
+                let old_bottom = self.project.time_signature.bottom;
+                self.project.time_signature.bottom = bottom;
+                Action::SetTimeSignatureBottom(old_bottom)
+            }
+            Action::CreateTrack(track) => {
+                let old_len = self.project.tracks.len();
+                self.project.tracks.push(track);
+
+                if old_len == 0 {
+                    self.selected_track_index = Some(0);
+                }
+
+                Action::DeleteTrack(old_len)
+            }
+            Action::DeleteTrack(index) => {
+                if let Some(selected_track_index) = self.selected_track_index {
+                    if index == selected_track_index {
+                        self.selected_track_index = None;
+                    }
+                }
+
+                let track = self.project.tracks.remove(index);
+                Action::CreateTrack(track)
+            }
+            Action::RenameTrack(index, new_name) => {
+                let track = &mut self.project.tracks[index];
+                let old_name = track.name.clone();
+                track.name = new_name;
+                Action::RenameTrack(index, old_name)
+            }
+            Action::SetTrackInstrument(track_index, instrument) => {
+                let track = &mut self.project.tracks[track_index];
+                let old_instrument = track.instrument;
+                track.instrument = instrument;
+                Action::SetTrackInstrument(track_index, old_instrument)
+            }
+            Action::CreateNote(track_index, note) => {
+                let track = &mut self.project.tracks[track_index];
+                let note_index = track.notes.len();
+                track.notes.push(note);
+                Action::DeleteNote(track_index, note_index)
+            }
+            Action::DeleteNote(track_index, note_index) => {
+                let note = self.project.tracks[track_index].notes.remove(note_index);
+                Action::CreateNote(track_index, note)
+            }
+            Action::EditNote(track_index, note_index, new_offset, new_pitch, new_length) => {
+                let note = &mut self.project.tracks[track_index].notes[note_index];
+
+                let old_offset = note.offset;
+                let old_pitch = note.pitch;
+                let old_length = note.length;
+
+                note.offset = new_offset;
+                note.pitch = new_pitch;
+                note.length = new_length;
+
+                Action::EditNote(track_index, note_index, old_offset, old_pitch, old_length)
+            }
+        }
+    }
+
+    fn undo_last(&mut self) {
+        match self.undo_stack.pop() {
+            None => {}
+            Some(action) => {
+                let inverse = self.perform_action_impl(action);
+                self.redo_stack.push(inverse);
+            }
+        }
+    }
+
+    fn redo_last(&mut self) {
+        match self.redo_stack.pop() {
+            None => {}
+            Some(action) => {
+                let inverse = self.perform_action_impl(action);
+                self.undo_stack.push(inverse);
+            }
+        }
+    }
+
     fn get_output_devices(&self) -> Vec<MidiOutput> {
         let mut output_devices = Vec::new();
 
@@ -404,10 +612,27 @@ impl Model {
         html! {
             <div id="top-bar" class="frame dark">
                 <div class="h-box">
+                    { self.view_controls(ctx) }
                     { self.view_bpm(ctx) }
                     { self.view_time_signature(ctx) }
                     { self.view_output_selection(ctx) }
                 </div>
+            </div>
+        }
+    }
+
+    fn view_controls(&self, ctx: &Context<Self>) -> Html {
+        // TODO: add MIDI playback.
+        let toggle = ctx.link().batch_callback(|_| None);
+
+        let undo = ctx.link().callback(|_| Msg::Undo);
+        let redo = ctx.link().callback(|_| Msg::Redo);
+
+        html! {
+            <div class="h-box frame">
+                <button onclick={ toggle }>{ "Play/Pause" }</button>
+                <button onclick={ undo }>{ "Undo" }</button>
+                <button onclick={ redo }>{ "Redo" }</button>
             </div>
         }
     }
@@ -794,14 +1019,6 @@ impl Model {
         }
     }
 
-    fn act_on_selected_track_mut<R>(&mut self, action: impl Fn(&mut Track) -> R) -> Option<R> {
-        if let Some(index) = self.selected_track_index {
-            Some(action(&mut self.project.tracks[index]))
-        } else {
-            None
-        }
-    }
-
     fn play_note(&self, note: u8, duration: u32) {
         let note = JsValue::from_f64(note as _);
         let full_velocity = JsValue::from_f64(0x7f as _);
@@ -819,15 +1036,18 @@ impl Model {
     }
 }
 
+#[derive(Clone)]
 struct NoteOperation {
     note_index: usize,
     type_: NoteOperationType,
 }
 
+#[derive(Clone)]
 enum NoteOperationType {
-    DragLeftEdge,
-    DragRightEdge,
-    Move,
+    DragLeftEdge(f64, f64),
+    DragRightEdge(f64),
+    Move(f64, f64, u8),
+    CreateAndMove,
 }
 
 fn main() {
