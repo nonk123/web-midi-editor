@@ -6,7 +6,7 @@ use crate::{
 #[derive(Clone)]
 pub enum Action {
     RenameProject(String),
-    SetBpm(u32),
+    SetBpm(f64),
     SetTimeSignatureTop(u32),
     SetTimeSignatureBottom(u32),
     CreateTrack(Track),

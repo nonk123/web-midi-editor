@@ -9,8 +9,25 @@ pub const MIN_INTERVAL: f64 = 1.0 / MIN_DIVISION as f64;
 pub struct Project {
     pub name: String,
     pub time_signature: TimeSignature,
-    pub bpm: u32,
+    pub bpm: f64,
     pub tracks: Vec<Track>,
+}
+
+impl Project {
+    pub fn length(&self) -> f64 {
+        self.tracks
+            .iter()
+            .map(|track| {
+                track
+                    .notes
+                    .iter()
+                    .map(|note| note.offset + note.length)
+                    .reduce(f64::max)
+                    .unwrap_or(0.0)
+            })
+            .reduce(f64::max)
+            .unwrap_or(0.0)
+    }
 }
 
 #[derive(Clone)]

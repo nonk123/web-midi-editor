@@ -32,14 +32,13 @@ impl Model {
     }
 
     pub fn view_controls(&self, ctx: &Context<Self>) -> Html {
-        let toggle = ctx.link().batch_callback(|_| None);
-
+        let toggle = ctx.link().callback(|_| Msg::TogglePlayback);
         let undo = ctx.link().callback(|_| Msg::Undo);
         let redo = ctx.link().callback(|_| Msg::Redo);
 
         html! {
             <div class="h-box frame">
-                <button onclick={ toggle }>{ "Play/Pause" }</button>
+                <button onclick={ toggle }>{ "Play/Stop" }</button>
                 <button onclick={ undo }>{ "Undo" }</button>
                 <button onclick={ redo }>{ "Redo" }</button>
             </div>
@@ -382,7 +381,7 @@ impl Model {
 
                 let onclick = ctx
                     .link()
-                    .callback(move |_: MouseEvent| Msg::PlaySingleNote(pitch));
+                    .callback(move |_: MouseEvent| Msg::PlayMidiNote(pitch));
 
                 let note_name = note_name(pitch);
 

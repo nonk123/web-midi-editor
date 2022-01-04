@@ -1,4 +1,5 @@
 use action::Action;
+use gloo_timers::callback::Timeout;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use web_sys::{HtmlElement, MidiAccess, MidiOutput};
 use yew::{events::MouseEvent, prelude::*};
@@ -26,13 +27,15 @@ pub enum Msg {
     RenameSelectedTrack(String),
     SetSelectedTrackInstrument(u8),
     SetProjectName(String),
-    SetBpm(u32),
+    SetBpm(f64),
     SetTimeSignatureTop(u32),
     SetTimeSignatureBottom(u32),
     PianoRollMouseDown(MouseEvent),
     PianoRollMouseUp,
     PianoRollMouseMove(MouseEvent),
-    PlaySingleNote(u8),
+    TogglePlayback,
+    SetPlayProgress(f64),
+    PlayMidiNote(u8),
     Undo,
     Redo,
 }
@@ -47,6 +50,9 @@ pub struct Model {
     last_placed_note_length: f64,
     undo_stack: Vec<Action>,
     redo_stack: Vec<Action>,
+    play_offset: f64,
+    play_progress: f64,
+    playing_notes: Vec<Timeout>,
     _success_closure: Closure<dyn FnMut(JsValue)>,
     _fail_closure: Closure<dyn FnMut(JsValue)>,
 }
@@ -83,7 +89,7 @@ impl Component for Model {
         let project = Project {
             name: "Untitled".to_string(),
             time_signature: TimeSignature { top: 4, bottom: 4 },
-            bpm: 120,
+            bpm: 120.0,
             tracks: Vec::new(),
         };
 
@@ -97,6 +103,9 @@ impl Component for Model {
             last_placed_note_length: 1.0 / 8.0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            play_offset: 0.0,
+            play_progress: 0.0,
+            playing_notes: Vec::new(),
             _success_closure: success,
             _fail_closure: fail,
         }
@@ -129,7 +138,7 @@ impl Component for Model {
             }
             Msg::SetOutputDevice(output) => {
                 self.selected_output = Some(output);
-                self.play_note(60, 1000);
+                self.play_midi_note(60, 1000.0);
 
                 true
             }
@@ -432,8 +441,21 @@ impl Component for Model {
                     }
                 }
             }
-            Msg::PlaySingleNote(pitch) => {
-                self.play_note(pitch, 1000);
+            Msg::TogglePlayback => {
+                self.play(ctx);
+                false
+            }
+            Msg::SetPlayProgress(progress) => {
+                self.play_progress = progress;
+
+                if self.play_progress + 1e-4 >= self.project.length() {
+                    self.playing_notes.clear();
+                }
+
+                true
+            }
+            Msg::PlayMidiNote(pitch) => {
+                self.play_midi_note(pitch, 1000.0);
                 false
             }
             Msg::Undo => {
