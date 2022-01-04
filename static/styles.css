@@ -1,10 +1,8 @@
 body {
     margin: 0;
     padding: 0;
-    width: 100vw;
-    height: 100vh;
     background: var(--background);
-    --top-bar-height: 75px;
+    overflow: hidden;
     --piano-keys-width: 50px;
     --piano-key-height: 30px;
     --background: #242936;
@@ -85,39 +83,45 @@ select, input, button {
     color: white;
 }
 
-
-#top-bar {
-    position: fixed;
+#main-view {
+    display: grid;
+    position: absolute;
+    left: 0;
     top: 0;
-    height: var(--top-bar-height);
-}
-
-#project-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
+    width: 100%;
+    height: 100%;
 }
 
 #top-bar, #project-panel {
-    border-top-left-radius: 0;
-    border-top-right-radius: 0;
+    position: sticky;
+    top: 0;
+    border-radius: 0;
 }
 
 #top-bar {
-    border-bottom-left-radius: 0;
+    left: 0;
+    grid-area: 1 / 1;
+    border-right: none;
+    align-items: start;
 }
 
 #project-panel {
-    border-bottom-right-radius: 0;
+    right: 0;
+    grid-row-start: 1;
+    grid-row-end: 3;
+    grid-column: 3;
+}
+
+#piano-wrapper {
+    overflow: scroll;
+    width: 100%;
+    height: 100%;
+    grid-area: 2 / 1;
 }
 
 #piano-view {
     display: grid;
-    width: 100vw;
-    position: absolute;
-    left: 0;
-    top: var(--top-bar-height);
-    align-items: flex-start;
+    grid-template-columns: var(--piano-keys-width) auto;
 }
 
 #piano-keys {
@@ -141,5 +145,4 @@ select, input, button {
 #piano-keys {
     position: sticky;
     left: 0;
-    width: var(--piano-keys-width);
 }

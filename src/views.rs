@@ -6,7 +6,7 @@ use yew::{
 };
 
 use crate::{
-    project::{MIN_DIVISION, NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH},
+    project::{MIN_DIVISION, MIN_INTERVAL, NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH},
     util::{note_name, select_get_value, time_signature_options},
     Model, Msg,
 };
@@ -20,13 +20,11 @@ impl Model {
 
     pub fn view_top_bar(&self, ctx: &Context<Self>) -> Html {
         html! {
-            <div id="top-bar" class="frame dark">
-                <div class="h-box">
-                    { self.view_controls(ctx) }
-                    { self.view_bpm(ctx) }
-                    { self.view_time_signature(ctx) }
-                    { self.view_output_selection(ctx) }
-                </div>
+            <div id="top-bar" class="h-box frame dark">
+                { self.view_controls(ctx) }
+                { self.view_bpm(ctx) }
+                { self.view_time_signature(ctx) }
+                { self.view_output_selection(ctx) }
             </div>
         }
     }
@@ -157,7 +155,7 @@ impl Model {
         }
     }
 
-    pub fn view_track_panel(&self, ctx: &Context<Self>) -> Html {
+    pub fn view_project_panel(&self, ctx: &Context<Self>) -> Html {
         html! {
             <div id="project-panel" class="v-box frame dark">
                 { self.view_project_info(ctx) }
@@ -302,22 +300,24 @@ impl Model {
         let width = 10000.0;
 
         html! {
-            <div id="piano-view" class="h-box no-gap" style={ format!("width: {}px;", width) }>
-                <svg id="note-lines" width="100%" height="100%">
-                    { for self.view_note_lines() }
-                </svg>
-                <svg id="measure-lines" width="100%" height="100%">
-                    { for self.view_measure_lines(width) }
-                </svg>
-                <div id="piano-keys" class="v-box-left no-gap">
-                    { for self.view_piano_keys(ctx) }
+            <div id="piano-wrapper">
+                <div id="piano-view" style={ format!("width: {}px", width) }>
+                    <svg id="note-lines" width="100%" height="100%">
+                        { for self.view_note_lines() }
+                    </svg>
+                    <svg id="measure-lines" width="100%" height="100%">
+                        { for self.view_measure_lines(width) }
+                    </svg>
+                    <div id="piano-keys" class="v-box-left no-gap">
+                        { for self.view_piano_keys(ctx) }
+                    </div>
+                    <svg id="piano-notes" width="100%" height="100%">
+                        { for self.view_notes() }
+                    </svg>
+                    <div ref={ self.piano_roll_area.clone() } id="clickable-area"
+                        { onmousedown } { onmouseup } { onmousemove }
+                        { oncontextmenu }/>
                 </div>
-                <svg id="piano-notes" width="100%" height="100%">
-                    { for self.view_notes() }
-                </svg>
-                <div ref={ self.piano_roll_area.clone() } id="clickable-area"
-                     { onmousedown } { onmouseup } { onmousemove }
-                     { oncontextmenu }/>
             </div>
         }
     }
@@ -341,7 +341,7 @@ impl Model {
     pub fn view_measure_lines(&self, width: f64) -> Vec<Html> {
         let mut measure_lines = Vec::new();
 
-        let division_width = WHOLE_NOTE_WIDTH / MIN_DIVISION as f64;
+        let division_width = WHOLE_NOTE_WIDTH * MIN_INTERVAL as f64;
 
         let mut measure_progress = 0;
         let mut x = 0.0;

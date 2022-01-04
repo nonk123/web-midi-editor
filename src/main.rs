@@ -472,11 +472,11 @@ impl Component for Model {
     fn view(&self, ctx: &Context<Self>) -> Html {
         if self.midi_access.is_some() {
             html! {
-                <>
-                    { self.view_piano_roll(ctx) }
+                <div id="main-view">
                     { self.view_top_bar(ctx) }
-                    { self.view_track_panel(ctx) }
-                </>
+                    { self.view_project_panel(ctx) }
+                    { self.view_piano_roll(ctx) }
+                </div>
             }
         } else {
             self.view_no_midi()
