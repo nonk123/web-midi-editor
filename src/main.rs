@@ -1,7 +1,8 @@
 use action::Action;
-use gloo_timers::callback::Timeout;
+use gloo_timers::callback::Interval;
+use views::PIANO_KEYS_WIDTH;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
-use web_sys::{HtmlElement, MidiAccess, MidiOutput};
+use web_sys::{HtmlElement, MidiAccess, MidiOutput, SvgLineElement};
 use yew::{events::MouseEvent, prelude::*};
 
 mod action;
@@ -14,7 +15,7 @@ use project::{
     Note, Project, TimeSignature, Track, MIN_INTERVAL, NOTE_EDGE_WIDTH, NOTE_RECT_HEIGHT,
     WHOLE_NOTE_WIDTH,
 };
-use util::{mouse_x_to_interval, relative_mouse_pos, snap};
+use util::{mouse_x_to_interval, mouse_y_to_pitch, relative_mouse_pos, snap};
 
 pub enum Msg {
     MidiAccessGranted(MidiAccess),
@@ -30,11 +31,14 @@ pub enum Msg {
     SetBpm(f64),
     SetTimeSignatureTop(u32),
     SetTimeSignatureBottom(u32),
+    ProgressBarMouseDown(MouseEvent),
+    ProgressBarMouseUp,
     PianoRollMouseDown(MouseEvent),
     PianoRollMouseUp,
-    PianoRollMouseMove(MouseEvent),
+    MouseMove(MouseEvent),
     TogglePlayback,
     SetPlayProgress(f64),
+    IncrementPlayProgress,
     PlayMidiNote(u8),
     Undo,
     Redo,
@@ -45,14 +49,15 @@ pub struct Model {
     selected_output: Option<MidiOutput>,
     project: Project,
     selected_track_index: Option<usize>,
-    note_operation: Option<NoteOperation>,
+    mouse_operation: MouseOperation,
     piano_roll_area: NodeRef,
     last_placed_note_length: f64,
     undo_stack: Vec<Action>,
     redo_stack: Vec<Action>,
     play_offset: f64,
     play_progress: f64,
-    playing_notes: Vec<Timeout>,
+    progress_line: NodeRef,
+    tick_interval: Option<Interval>,
     _success_closure: Closure<dyn FnMut(JsValue)>,
     _fail_closure: Closure<dyn FnMut(JsValue)>,
 }
@@ -98,14 +103,15 @@ impl Component for Model {
             selected_output: None,
             project,
             selected_track_index: None,
-            note_operation: None,
+            mouse_operation: MouseOperation::None,
             piano_roll_area: NodeRef::default(),
             last_placed_note_length: 1.0 / 8.0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             play_offset: 0.0,
             play_progress: 0.0,
-            playing_notes: Vec::new(),
+            progress_line: NodeRef::default(),
+            tick_interval: None,
             _success_closure: success,
             _fail_closure: fail,
         }
@@ -207,84 +213,102 @@ impl Component for Model {
                 self.perform_action(Action::SetTimeSignatureBottom(bottom));
                 true
             }
+            Msg::ProgressBarMouseDown(event) => {
+                if let MouseOperation::None = self.mouse_operation {
+                    self.mouse_operation = MouseOperation::DragProgressBar;
+
+                    let (mouse_x, _) = relative_mouse_pos(&event);
+                    self.set_play_offset_from_mouse_x(mouse_x);
+
+                    return true;
+                }
+
+                false
+            }
+            Msg::ProgressBarMouseUp => {
+                self.mouse_operation = MouseOperation::None;
+                false
+            }
             Msg::PianoRollMouseDown(event) => {
-                if self.note_operation.is_some() {
-                    false
-                } else if let Some(track_index) = self.selected_track_index {
-                    let track = &mut self.project.tracks[track_index];
+                match self.mouse_operation {
+                    MouseOperation::None => {}
+                    _ => return false,
+                };
 
-                    let (mouse_x, mouse_y) = relative_mouse_pos(&event);
+                let track_index = match self.selected_track_index {
+                    None => return false,
+                    Some(index) => index,
+                };
 
-                    match event.buttons() {
-                        1 => {
-                            let existing_note_index = track.get_note_at_position(mouse_x, mouse_y);
+                let track = &mut self.project.tracks[track_index];
 
-                            if let Some(note_index) = existing_note_index {
-                                let note = &track.notes[note_index];
+                let (mouse_x, mouse_y) = relative_mouse_pos(&event);
 
-                                self.note_operation = Some(NoteOperation {
-                                    note_index,
-                                    type_: {
-                                        if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH {
-                                            NoteOperationType::DragLeftEdge(
-                                                note.offset,
-                                                note.length,
-                                            )
-                                        } else if mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH {
-                                            NoteOperationType::DragRightEdge(note.length)
-                                        } else {
-                                            let grab_offset = mouse_x_to_interval(mouse_x);
+                match event.buttons() {
+                    1 => {
+                        let existing_note_index = track.get_note_at_position(mouse_x, mouse_y);
 
-                                            NoteOperationType::Move(
-                                                grab_offset - note.offset,
-                                                note.offset,
-                                                note.pitch,
-                                            )
-                                        }
-                                    },
-                                })
-                            } else {
-                                let len = track.notes.len();
+                        if let Some(note_index) = existing_note_index {
+                            let note = &track.notes[note_index];
 
-                                let pitch = 127.0 - mouse_y / NOTE_RECT_HEIGHT;
-                                let pitch = pitch.clamp(0.0, 127.0).ceil() as u8;
+                            self.mouse_operation = MouseOperation::NoteOperation {
+                                note_index,
+                                type_: {
+                                    if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH {
+                                        NoteOperationType::DragLeftEdge(note.offset, note.length)
+                                    } else if mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH {
+                                        NoteOperationType::DragRightEdge(note.length)
+                                    } else {
+                                        let grab_offset = mouse_x_to_interval(mouse_x);
 
-                                let offset = snap(mouse_x / WHOLE_NOTE_WIDTH, 1.0 / 16.0);
+                                        NoteOperationType::Move(
+                                            grab_offset - note.offset,
+                                            note.offset,
+                                            note.pitch,
+                                        )
+                                    }
+                                },
+                            };
+                        } else {
+                            let len = track.notes.len();
 
-                                track.notes.push(Note {
-                                    pitch,
-                                    velocity: 127,
-                                    offset,
-                                    length: self.last_placed_note_length,
-                                });
+                            track.notes.push(Note {
+                                pitch: mouse_y_to_pitch(mouse_y),
+                                velocity: 127,
+                                offset: mouse_x_to_interval(mouse_x),
+                                length: self.last_placed_note_length,
+                            });
 
-                                self.note_operation = Some(NoteOperation {
-                                    note_index: len,
-                                    type_: NoteOperationType::CreateAndMove,
-                                });
-                            }
-
-                            true
+                            self.mouse_operation = MouseOperation::NoteOperation {
+                                note_index: len,
+                                type_: NoteOperationType::CreateAndMove,
+                            };
                         }
-                        2 => {
-                            if let Some(note_index) = track.get_note_at_position(mouse_x, mouse_y) {
-                                self.perform_action(Action::DeleteNote(track_index, note_index));
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        _ => false,
+
+                        true
                     }
-                } else {
-                    false
+                    2 => {
+                        if let Some(note_index) = track.get_note_at_position(mouse_x, mouse_y) {
+                            self.perform_action(Action::DeleteNote(track_index, note_index));
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
                 }
             }
             Msg::PianoRollMouseUp => {
-                if let Some(note_operation) = self.note_operation.clone() {
-                    if let Some(selected_track_index) = self.selected_track_index {
+                let selected_track_index = match self.selected_track_index {
+                    None => return false,
+                    Some(index) => index,
+                };
+
+                let result = match self.mouse_operation.clone() {
+                    MouseOperation::None | MouseOperation::DragProgressBar => false,
+                    MouseOperation::NoteOperation { note_index, type_ } => {
                         let track = &mut self.project.tracks[selected_track_index];
-                        let note = &mut track.notes[note_operation.note_index];
+                        let note = &mut track.notes[note_index];
 
                         let new_offset = note.offset;
                         let new_pitch = note.pitch;
@@ -292,7 +316,7 @@ impl Component for Model {
 
                         let mut create_note_instead = None;
 
-                        match note_operation.type_ {
+                        match type_ {
                             NoteOperationType::DragLeftEdge(offset, length) => {
                                 note.offset = offset;
                                 note.length = length;
@@ -305,7 +329,7 @@ impl Component for Model {
                                 note.pitch = pitch;
                             }
                             NoteOperationType::CreateAndMove => {
-                                let mut note = track.notes.remove(note_operation.note_index);
+                                let mut note = track.notes.remove(note_index);
                                 note.offset = new_offset;
                                 note.pitch = new_pitch;
                                 create_note_instead = Some(note);
@@ -317,75 +341,80 @@ impl Component for Model {
                         } else {
                             self.perform_action(Action::EditNote(
                                 selected_track_index,
-                                note_operation.note_index,
+                                note_index,
                                 new_offset,
                                 new_pitch,
                                 new_length,
                             ));
                         }
+
+                        true
                     }
-                }
+                };
 
-                self.note_operation = None;
+                self.mouse_operation = MouseOperation::None;
 
-                true
+                result
             }
-            Msg::PianoRollMouseMove(event) => {
+            Msg::MouseMove(event) => {
                 let (mouse_x, mouse_y) = relative_mouse_pos(&event);
 
-                match event.buttons() {
-                    1 => {
-                        if let Some(note_operation) = &self.note_operation {
-                            if let Some(index) = self.selected_track_index {
-                                let track = &mut self.project.tracks[index];
-                                let note = &mut track.notes[note_operation.note_index];
-
-                                let offset = mouse_x_to_interval(mouse_x);
-
-                                let pitch = 127
-                                    - (mouse_y / NOTE_RECT_HEIGHT - 0.5).round().clamp(0.0, 127.0)
-                                        as u8;
-
-                                match note_operation.type_ {
-                                    NoteOperationType::Move(grab_offset, _, _) => {
-                                        note.offset = offset - grab_offset;
-                                        note.pitch = pitch;
-                                    }
-                                    NoteOperationType::CreateAndMove => {
-                                        note.offset = offset;
-                                        note.pitch = pitch;
-                                    }
-                                    NoteOperationType::DragLeftEdge(_, _) => {
-                                        let offset =
-                                            offset.min(note.offset + note.length - MIN_INTERVAL);
-
-                                        note.length += note.offset - offset;
-                                        note.offset = offset;
-                                    }
-                                    NoteOperationType::DragRightEdge(_) => {
-                                        let offset =
-                                            offset.max(note.offset - note.length + MIN_INTERVAL);
-
-                                        note.length = offset - note.offset + MIN_INTERVAL;
-                                    }
-                                }
-
-                                if note.length < 1e-4 {
-                                    note.length = MIN_INTERVAL;
-                                }
-
-                                self.last_placed_note_length = note.length;
-
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
+                match self.mouse_operation.clone() {
+                    MouseOperation::DragProgressBar => {
+                        self.set_play_offset_from_mouse_x(mouse_x);
+                        true
                     }
-                    2 => {
-                        if let Some(selected_track_index) = self.selected_track_index {
+                    MouseOperation::NoteOperation { note_index, type_ } => {
+                        let index = match self.selected_track_index {
+                            Some(index) => index,
+                            None => return false,
+                        };
+
+                        let track = &mut self.project.tracks[index];
+                        let note = &mut track.notes[note_index];
+
+                        let offset = mouse_x_to_interval(mouse_x);
+
+                        let pitch = 127
+                            - (mouse_y / NOTE_RECT_HEIGHT - 0.5).round().clamp(0.0, 127.0) as u8;
+
+                        match type_ {
+                            NoteOperationType::Move(grab_offset, _, _) => {
+                                note.offset = offset - grab_offset;
+                                note.pitch = pitch;
+                            }
+                            NoteOperationType::CreateAndMove => {
+                                note.offset = offset;
+                                note.pitch = pitch;
+                            }
+                            NoteOperationType::DragLeftEdge(_, _) => {
+                                let offset = offset.min(note.offset + note.length - MIN_INTERVAL);
+
+                                note.length += note.offset - offset;
+                                note.offset = offset;
+                            }
+                            NoteOperationType::DragRightEdge(_) => {
+                                let offset = offset.max(note.offset - note.length + MIN_INTERVAL);
+
+                                note.length = offset - note.offset + MIN_INTERVAL;
+                            }
+                        }
+
+                        if note.length < 1e-4 {
+                            note.length = MIN_INTERVAL;
+                        }
+
+                        self.last_placed_note_length = note.length;
+
+                        true
+                    }
+                    MouseOperation::None => {
+                        if event.buttons() == 2 {
+                            let selected_track_index = match self.selected_track_index {
+                                Some(index) => index,
+                                None => return false,
+                            };
+
                             let track = &mut self.project.tracks[selected_track_index];
                             let note_index = track.get_note_at_position(mouse_x, mouse_y);
 
@@ -395,47 +424,39 @@ impl Component for Model {
                                     note_index,
                                 ));
 
-                                true
-                            } else {
-                                false
+                                return true;
                             }
-                        } else {
-                            false
                         }
-                    }
-                    _ => {
-                        if self.note_operation.is_none() {
-                            self.act_on_selected_track(|track| {
-                                self.piano_roll_area
-                                    .cast::<HtmlElement>()
-                                    .map(|piano_roll_area| {
-                                        let mut cursor = "auto";
 
-                                        for note in &track.notes {
-                                            if mouse_x < note.screen_x()
-                                                || mouse_x > note.right_edge()
-                                                || mouse_y < note.screen_y()
-                                                || mouse_y > note.bottom_edge()
-                                            {
-                                                continue;
-                                            }
+                        self.act_on_selected_track(|track| {
+                            self.piano_roll_area
+                                .cast::<HtmlElement>()
+                                .map(|piano_roll_area| {
+                                    let mut cursor = "auto";
 
-                                            if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH
-                                                || mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH
-                                            {
-                                                cursor = "ew-resize";
-                                                break;
-                                            } else {
-                                                cursor = "move";
-                                                break;
-                                            }
+                                    for note in &track.notes {
+                                        if mouse_x < note.screen_x()
+                                            || mouse_x > note.right_edge()
+                                            || mouse_y < note.screen_y()
+                                            || mouse_y > note.bottom_edge()
+                                        {
+                                            continue;
                                         }
 
-                                        piano_roll_area.style().set_property("cursor", cursor).ok();
-                                        false
-                                    });
-                            });
-                        }
+                                        if mouse_x <= note.screen_x() + NOTE_EDGE_WIDTH
+                                            || mouse_x >= note.right_edge() - NOTE_EDGE_WIDTH
+                                        {
+                                            cursor = "ew-resize";
+                                            break;
+                                        } else {
+                                            cursor = "move";
+                                            break;
+                                        }
+                                    }
+
+                                    piano_roll_area.style().set_property("cursor", cursor).ok();
+                                });
+                        });
 
                         false
                     }
@@ -447,9 +468,14 @@ impl Component for Model {
             }
             Msg::SetPlayProgress(progress) => {
                 self.play_progress = progress;
+                true
+            }
+            Msg::IncrementPlayProgress => {
+                self.play_progress += MIN_INTERVAL;
 
-                if self.play_progress + 1e-4 >= self.project.length() {
-                    self.playing_notes.clear();
+                if self.play_offset + self.play_progress - 1e-4 >= self.project.length() {
+                    self.tick_interval.take().map(|interval| interval.cancel());
+                    self.play_progress = 0.0;
                 }
 
                 true
@@ -469,15 +495,21 @@ impl Component for Model {
         }
     }
 
+    fn rendered(&mut self, _ctx: &Context<Self>, _first_render: bool) {
+        self.progress_line
+            .cast::<SvgLineElement>()
+            .map(|progress_line| {
+                let x = (self.play_offset + self.play_progress) * WHOLE_NOTE_WIDTH;
+
+                for animated_length in [progress_line.x1(), progress_line.x2()] {
+                    animated_length.base_val().set_value(x as f32).ok();
+                }
+            });
+    }
+
     fn view(&self, ctx: &Context<Self>) -> Html {
         if self.midi_access.is_some() {
-            html! {
-                <div id="main-view">
-                    { self.view_top_bar(ctx) }
-                    { self.view_project_panel(ctx) }
-                    { self.view_piano_roll(ctx) }
-                </div>
-            }
+            self.view_main(ctx)
         } else {
             self.view_no_midi()
         }
@@ -492,12 +524,21 @@ impl Model {
             None
         }
     }
+
+    fn set_play_offset_from_mouse_x(&mut self, mouse_x: f64) {
+        let offset = (mouse_x - PIANO_KEYS_WIDTH) / WHOLE_NOTE_WIDTH;
+        self.play_offset = snap(offset, MIN_INTERVAL);
+    }
 }
 
 #[derive(Clone)]
-struct NoteOperation {
-    note_index: usize,
-    type_: NoteOperationType,
+enum MouseOperation {
+    None,
+    DragProgressBar,
+    NoteOperation {
+        note_index: usize,
+        type_: NoteOperationType,
+    },
 }
 
 #[derive(Clone)]

@@ -3,8 +3,6 @@ body {
     padding: 0;
     background: var(--background);
     overflow: hidden;
-    --piano-keys-width: 50px;
-    --piano-key-height: 30px;
     --background: #242936;
     --background-dark: #1f2430;
     --border-color: #171b24;
@@ -64,10 +62,16 @@ select, input, button {
     width: 100%;
 }
 
+.overlay {
+    grid-area: 2 / 2;
+    width: 100%;
+    height: 100%;
+}
+
 .white-key, .black-key {
     border: none;
-    height: var(--piano-key-height);
-    width: var(--piano-keys-width);
+    width: 100%;
+    height: attr(data-key-height);
     text-align: center;
     border-radius: 0 5px 5px 0;
 }
@@ -106,9 +110,7 @@ select, input, button {
 }
 
 #project-panel {
-    right: 0;
-    grid-row-start: 1;
-    grid-row-end: 3;
+    grid-row: 1 / 3;
     grid-column: 3;
 }
 
@@ -121,28 +123,41 @@ select, input, button {
 
 #piano-view {
     display: grid;
-    grid-template-columns: var(--piano-keys-width) auto;
+    grid-template-rows: 1.1em auto;
 }
 
-#piano-keys {
-    grid-area: 1 / 1;
+#progress-bar, #progress-bar-clickable-area {
+    position: sticky;
+    top: 0;
+    left: 0;
+    grid-row: 1;
+    grid-column: 1 / 3;
 }
 
-#note-lines, #measure-lines, #clickable-area, #piano-notes {
-    grid-area: 1 / 2;
+#progress-bar {
+    background: var(--background-dark);
+    border-bottom: 2px solid var(--border-color);
 }
 
-#piano-keys, #note-lines, #measure-lines, #clickable-area, #piano-notes {
-    background: transparent;
-}
-
-#clickable-area {
-    display: block;
-    width: 100%;
-    height: 100%;
+.measure-number {
+    fill: darkgray;
+    font-size: 0.8em;
+    text-anchor: middle;
+    dominant-baseline: central;
 }
 
 #piano-keys {
     position: sticky;
     left: 0;
+    grid-area: 2 / 1
+}
+
+#piano-roll, #piano-roll-clickable-area {
+    grid-area: 2 / 2;
+    background: transparent;
+}
+
+#piano-roll-clickable-area, #progress-bar-clickable-area {
+    width: 100%;
+    height: 100%;
 }

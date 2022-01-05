@@ -36,6 +36,16 @@ pub struct TimeSignature {
     pub bottom: u32,
 }
 
+impl TimeSignature {
+    pub fn measure_length(&self) -> f64 {
+        self.top as f64 / self.bottom as f64
+    }
+
+    pub fn measure_width(&self) -> f64 {
+        self.measure_length() * WHOLE_NOTE_WIDTH
+    }
+}
+
 #[derive(Clone)]
 pub struct Track {
     pub name: String,

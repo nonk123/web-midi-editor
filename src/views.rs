@@ -6,15 +6,27 @@ use yew::{
 };
 
 use crate::{
-    project::{MIN_DIVISION, MIN_INTERVAL, NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH},
+    project::{MIN_INTERVAL, NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH},
     util::{note_name, select_get_value, time_signature_options},
     Model, Msg,
 };
+
+pub const PIANO_KEYS_WIDTH: f64 = 50.0;
 
 impl Model {
     pub fn view_no_midi(&self) -> Html {
         html! {
             <p class="error">{ "This app requires MIDI permissions to work" }</p>
+        }
+    }
+
+    pub fn view_main(&self, ctx: &Context<Self>) -> Html {
+        html! {
+            <div id="main-view">
+                { self.view_top_bar(ctx) }
+                { self.view_project_panel(ctx) }
+                { self.view_piano_roll(ctx) }
+            </div>
         }
     }
 
@@ -285,92 +297,110 @@ impl Model {
     }
 
     pub fn view_piano_roll(&self, ctx: &Context<Self>) -> Html {
-        let onmousedown = ctx
+        let progress_bar_on_mouse_down = ctx
+            .link()
+            .callback(|event: MouseEvent| Msg::ProgressBarMouseDown(event));
+
+        let progress_bar_on_mouse_up = ctx.link().callback(|_: MouseEvent| Msg::ProgressBarMouseUp);
+
+        let piano_roll_on_mouse_down = ctx
             .link()
             .callback(|event: MouseEvent| Msg::PianoRollMouseDown(event));
 
-        let onmouseup = ctx.link().callback(|_: MouseEvent| Msg::PianoRollMouseUp);
+        let piano_roll_on_mouse_up = ctx.link().callback(|_: MouseEvent| Msg::PianoRollMouseUp);
 
-        let onmousemove = ctx
+        let on_mouse_move = ctx
             .link()
-            .callback(|event: MouseEvent| Msg::PianoRollMouseMove(event));
+            .callback(|event: MouseEvent| Msg::MouseMove(event));
 
         let oncontextmenu = |event: MouseEvent| event.prevent_default();
 
         let width = 10000.0;
 
+        let measure_width = self.project.time_signature.measure_width();
+        let interval_width = WHOLE_NOTE_WIDTH * MIN_INTERVAL;
+
+        let piano_view_style = format!(
+            "width: {}px; grid-template-columns: {}px auto;",
+            width, PIANO_KEYS_WIDTH
+        );
+
+        let grid_lines_style = format!(
+            r#"
+                background-size: {}px {}px;
+                background-image:
+                    linear-gradient(black 2px, transparent 1px),
+                    linear-gradient(90deg, black 2px, transparent 1px);
+            "#,
+            interval_width, NOTE_RECT_HEIGHT
+        );
+
+        let measure_lines_style = format!(
+            r#"
+                background-size: {}px 100%;
+                background-image: linear-gradient(90deg, black 4px, transparent 1px);
+            "#,
+            measure_width
+        );
+
         html! {
             <div id="piano-wrapper">
-                <div id="piano-view" style={ format!("width: {}px", width) }>
-                    <svg id="note-lines" width="100%" height="100%">
-                        { for self.view_note_lines() }
-                    </svg>
-                    <svg id="measure-lines" width="100%" height="100%">
-                        { for self.view_measure_lines(width) }
-                    </svg>
+                <div id="piano-view" style={ piano_view_style }>
                     <div id="piano-keys" class="v-box-left no-gap">
                         { for self.view_piano_keys(ctx) }
                     </div>
-                    <svg id="piano-notes" width="100%" height="100%">
-                        { for self.view_notes() }
+                    <svg id="progress-bar" width="100%" height="100%">
+                        { for self.view_measure_numbers(width) }
                     </svg>
-                    <div ref={ self.piano_roll_area.clone() } id="clickable-area"
-                        { onmousedown } { onmouseup } { onmousemove }
-                        { oncontextmenu }/>
+                    <div id="progress-bar-clickable-area"
+                         onmousedown={ progress_bar_on_mouse_down }
+                         onmouseup={ progress_bar_on_mouse_up }
+                         onmousemove= { on_mouse_move.clone() }/>
+                    <div class="overlay" style={ grid_lines_style }/>
+                    <div class="overlay" style={ measure_lines_style }/>
+                    <svg id="piano-roll" width="100%" height="100%">
+                        { for self.view_notes() }
+                        <line ref={ self.progress_line.clone() } y1="0" y2="100%"
+                              stroke="white" stroke-width="2"/>
+                    </svg>
+                    <div ref={ self.piano_roll_area.clone() } id="piano-roll-clickable-area"
+                         onmousedown={ piano_roll_on_mouse_down }
+                         onmouseup={ piano_roll_on_mouse_up }
+                         onmousemove={ on_mouse_move }
+                         { oncontextmenu }/>
                 </div>
             </div>
         }
     }
 
-    pub fn view_note_lines(&self) -> Vec<Html> {
-        (0..128)
-            .map(|pitch| {
-                let x1 = "0";
-                let y1 = ((pitch as f64 * NOTE_RECT_HEIGHT + 1.0) as u32).to_string();
+    pub fn view_measure_numbers(&self, width: f64) -> Vec<Html> {
+        let mut measure_numbers = Vec::new();
 
-                let x2 = "100%";
-                let y2 = y1.to_string();
-
-                html! {
-                    <line { x1 } { y1 } { x2 } { y2 } stroke="black" stroke-width="1"/>
-                }
-            })
-            .collect()
-    }
-
-    pub fn view_measure_lines(&self, width: f64) -> Vec<Html> {
-        let mut measure_lines = Vec::new();
-
-        let division_width = WHOLE_NOTE_WIDTH * MIN_INTERVAL as f64;
-
-        let mut measure_progress = 0;
+        let mut progress = 0.0;
         let mut x = 0.0;
 
+        let mut measure_number = 1;
+
+        let measure_length = self.project.time_signature.measure_length();
+
         while x <= width {
-            let time_sig = &self.project.time_signature;
+            if progress % measure_length <= 1e-5 {
+                let x = x + PIANO_KEYS_WIDTH;
 
-            let stroke_width = {
-                if measure_progress % (time_sig.top * MIN_DIVISION / time_sig.bottom) == 0 {
-                    "4"
-                } else {
-                    "1"
-                }
-            };
-
-            {
-                let x = x.round() as i32;
-
-                measure_lines.push(html! {
-                    <line x1={ x.to_string() } x2={ x.to_string() } y1="0" y2="100%"
-                          stroke="black" stroke-width={ stroke_width }/>
+                measure_numbers.push(html! {
+                    <text class="measure-number" x={ x.to_string() } y="50%">
+                        { measure_number.to_string() }
+                    </text>
                 });
+
+                measure_number += 1;
             }
 
-            x += division_width;
-            measure_progress += 1;
+            progress += MIN_INTERVAL;
+            x = progress * WHOLE_NOTE_WIDTH;
         }
 
-        measure_lines
+        measure_numbers
     }
 
     pub fn view_piano_keys(&self, ctx: &Context<Self>) -> Vec<Html> {
@@ -391,8 +421,12 @@ impl Model {
                     "white-key"
                 };
 
+                let style = format!("height: {}px;", NOTE_RECT_HEIGHT);
+
                 html! {
-                    <button { class } { onclick }>{ note_name.to_string() }</button>
+                    <button { class } { style } { onclick }>
+                        { note_name.to_string() }
+                    </button>
                 }
             })
             .collect()

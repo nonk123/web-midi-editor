@@ -1,12 +1,13 @@
-use std::collections::HashMap;
-
-use gloo_timers::callback::Timeout;
+use gloo_timers::callback::Interval;
 use js_sys::Array;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MidiOutput;
 use yew::prelude::*;
 
-use crate::{project::Note, Model, Msg};
+use crate::{
+    project::{Note, MIN_INTERVAL},
+    Model, Msg,
+};
 
 impl Model {
     pub fn get_output_devices(&self) -> Vec<MidiOutput> {
@@ -41,32 +42,28 @@ impl Model {
     }
 
     pub fn play(&mut self, ctx: &Context<Self>) {
-        if self.selected_output.is_none() {
-            return;
-        }
-
-        let selected_output = self.selected_output.clone().unwrap();
+        let output = match self.selected_output.clone() {
+            Some(output) => output,
+            None => return,
+        };
 
         for pitch in 0..=127 {
             self.stop_midi_note(pitch, None);
         }
 
-        let was_empty = self.playing_notes.is_empty();
-
-        loop {
-            match self.playing_notes.pop() {
-                None => break,
-                Some(timeout) => {
-                    timeout.cancel();
-                }
-            }
-        }
-
-        if !was_empty {
+        if self.tick_interval.is_some() {
+            self.tick_interval.take().unwrap().cancel();
+            ctx.link().send_message(Msg::SetPlayProgress(0.0));
             return;
-        }
+        };
 
         let whole_note_duration = 240.0 / self.project.bpm;
+        let min_interval_duration = whole_note_duration * MIN_INTERVAL;
+        let tick_interval = (min_interval_duration * 1000.0) as u32;
+
+        let link = ctx.link().clone();
+
+        let mut local_offset = self.play_offset;
 
         let all_notes = self
             .project
@@ -75,74 +72,36 @@ impl Model {
             .flat_map(|track| track.notes.clone())
             .collect::<Vec<Note>>();
 
-        let mut notes_by_offset_ms = HashMap::<u32, Vec<Note>>::new();
-        let mut note_ends = HashMap::<u32, Vec<Note>>::new();
+        self.tick_interval = Some(Interval::new(tick_interval, move || {
+            let full_velocity = JsValue::from_f64(0x7f as _);
 
-        for note in all_notes {
-            if note.offset >= self.play_offset - 1e-5 {
-                let offset_ms =
-                    ((note.offset - self.play_offset) * whole_note_duration * 1000.0) as u32;
+            let epsilon = 1e-5;
 
-                if let Some(notes) = notes_by_offset_ms.get_mut(&offset_ms) {
-                    notes.push(note.clone());
-                } else {
-                    notes_by_offset_ms.insert(offset_ms, vec![note.clone()]);
-                }
+            for note in &all_notes {
+                let start_offset = note.offset;
+                let end_offset = start_offset + note.length;
 
-                let note_length_ms = (note.length * whole_note_duration * 1000.0) as u32;
-                let stop_timeout_ms = offset_ms + note_length_ms;
+                let opcode = {
+                    if (local_offset - start_offset).abs() <= epsilon {
+                        0x90
+                    } else if (local_offset - end_offset).abs() <= epsilon {
+                        0x80
+                    } else {
+                        continue;
+                    }
+                };
 
-                if let Some(notes) = note_ends.get_mut(&stop_timeout_ms) {
-                    notes.push(note.clone());
-                } else {
-                    note_ends.insert(stop_timeout_ms, vec![note.clone()]);
-                }
+                let opcode = JsValue::from_f64(opcode as _);
+                let pitch = JsValue::from_f64(note.pitch as _);
+
+                let message = Array::of3(&opcode, &pitch, &full_velocity);
+
+                output.send(&message).ok();
             }
-        }
 
-        for (offset_ms, notes) in notes_by_offset_ms {
-            let output = selected_output.clone();
-            let link = ctx.link().clone();
-
-            let opcode = JsValue::from_f64(0x90 as _);
-            let full_velocity = JsValue::from_f64(0x7f as _);
-
-            let notes_clone = notes.clone();
-            let progress = notes[0].offset;
-
-            self.playing_notes.push(Timeout::new(offset_ms, move || {
-                for note in notes_clone {
-                    let pitch = JsValue::from_f64(note.pitch as _);
-                    let message = Array::of3(&opcode, &pitch, &full_velocity);
-                    output.send(&message).ok();
-                }
-
-                link.send_message(Msg::SetPlayProgress(progress));
-            }));
-        }
-
-        for (offset, notes) in note_ends {
-            let output = selected_output.clone();
-            let link = ctx.link().clone();
-
-            let opcode = JsValue::from_f64(0x80 as _);
-            let full_velocity = JsValue::from_f64(0x7f as _);
-
-            let end_safety = 6;
-            let end_timeout = offset.max(end_safety) - end_safety;
-
-            self.playing_notes.push(Timeout::new(end_timeout, move || {
-                let progress = notes[0].offset + notes[0].length;
-
-                for note in notes {
-                    let pitch = JsValue::from_f64(note.pitch as _);
-                    let message = Array::of3(&opcode, &pitch, &full_velocity);
-                    output.send(&message).ok();
-                }
-
-                link.send_message(Msg::SetPlayProgress(progress));
-            }));
-        }
+            link.send_message(Msg::IncrementPlayProgress);
+            local_offset += MIN_INTERVAL;
+        }));
     }
 
     pub fn play_midi_note(&self, pitch: u8, duration: f64) {

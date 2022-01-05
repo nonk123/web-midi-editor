@@ -2,7 +2,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlSelectElement};
 use yew::prelude::*;
 
-use crate::project::{MIN_INTERVAL, WHOLE_NOTE_WIDTH};
+use crate::project::{MIN_INTERVAL, NOTE_RECT_HEIGHT, WHOLE_NOTE_WIDTH};
 
 pub fn time_signature_options(values: &[u32]) -> Vec<Html> {
     values
@@ -37,7 +37,13 @@ pub fn note_name(midi_note: u8) -> String {
 }
 
 pub fn snap(x: f64, precision: f64) -> f64 {
-    x - x % precision
+    let f_mod = x % precision;
+
+    if f_mod >= precision / 2.0 {
+        x - f_mod + precision
+    } else {
+        x - f_mod
+    }
 }
 
 pub fn relative_mouse_pos(event: &MouseEvent) -> (f64, f64) {
@@ -56,4 +62,9 @@ pub fn relative_mouse_pos(event: &MouseEvent) -> (f64, f64) {
 
 pub fn mouse_x_to_interval(mouse_x: f64) -> f64 {
     snap(mouse_x / WHOLE_NOTE_WIDTH, MIN_INTERVAL)
+}
+
+pub fn mouse_y_to_pitch(mouse_y: f64) -> u8 {
+    let pitch = 127.0 - mouse_y / NOTE_RECT_HEIGHT;
+    pitch.clamp(0.0, 127.0).ceil() as u8
 }
