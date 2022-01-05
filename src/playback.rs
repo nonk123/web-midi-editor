@@ -60,44 +60,13 @@ impl Model {
 
         let link = ctx.link().clone();
 
-        let tracks = self.project.tracks.clone();
-
+        let mut midi = self.project.to_midi();
         let mut local_offset = self.play_offset;
 
         self.tick_interval = Some(Interval::new(tick_interval, move || {
-            let full_velocity = JsValue::from_f64(0x7f as _);
-
-            let epsilon = 1e-5;
-
-            for track in &tracks {
-                let opcode = JsValue::from_f64(0xC0 as _);
-                let instrument = JsValue::from_f64(track.instrument as _);
-
-                let message = Array::of2(&opcode, &instrument);
-
-                output.send(&message).ok();
-
-                for note in &track.notes {
-                    let start_offset = note.offset;
-                    let end_offset = start_offset + note.length;
-
-                    let opcode = {
-                        if (local_offset - start_offset).abs() <= epsilon {
-                            0x90
-                        } else if (local_offset - end_offset).abs() <= epsilon {
-                            0x80
-                        } else {
-                            continue;
-                        }
-                    };
-
-                    let opcode = JsValue::from_f64(opcode as _);
-                    let pitch = JsValue::from_f64(note.pitch as _);
-
-                    let message = Array::of3(&opcode, &pitch, &full_velocity);
-
-                    output.send(&message).ok();
-                }
+            while !midi.is_empty() && (midi[0].offset - local_offset).abs() <= 1e-4 {
+                let array = midi.remove(0).type_.to_array();
+                output.send(&array).ok();
             }
 
             link.send_message(Msg::IncrementPlayProgress);
@@ -106,7 +75,10 @@ impl Model {
     }
 
     pub fn play_midi_note(&self, instrument: u8, pitch: u8, duration: f64) {
-        let output = self.selected_output.as_ref().unwrap();
+        let output = match self.selected_output.as_ref() {
+            Some(output) => output,
+            None => return,
+        };
 
         let opcode = JsValue::from_f64(0xC0 as _);
         let instrument = JsValue::from_f64(instrument as _);
@@ -129,12 +101,15 @@ impl Model {
     }
 
     pub fn stop_midi_note(&self, pitch: u8, timeout: Option<f64>) {
+        let output = match self.selected_output.as_ref() {
+            Some(output) => output,
+            None => return,
+        };
+
         let pitch = JsValue::from_f64(pitch as _);
         let full_velocity = JsValue::from_f64(0x7f as _);
 
         let message = Array::of3(&JsValue::from_f64(0x80 as _), &pitch, &full_velocity);
-
-        let output = self.selected_output.as_ref().unwrap();
 
         if let Some(timeout) = timeout {
             output.send_with_timestamp(&message, timeout).ok();

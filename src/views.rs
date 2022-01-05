@@ -231,6 +231,8 @@ impl Model {
             }
         };
 
+        let export = ctx.link().callback(|_| Msg::ExportMidi);
+
         html! {
             <div class="v-box-left frame full-width">
                 { tracks }
@@ -238,6 +240,7 @@ impl Model {
                     <button onclick={ create }>{ "Create" }</button>
                     <button onclick={ delete }>{ "Delete" }</button>
                 </div>
+                <button onclick={ export }>{ "Export MIDI" }</button>
             </div>
         }
     }

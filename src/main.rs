@@ -1,11 +1,14 @@
 use action::Action;
 use gloo_timers::callback::Interval;
+use js_sys::{Array, Uint8Array};
+use midi::export_midi;
 use views::PIANO_KEYS_WIDTH;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
-use web_sys::{HtmlElement, MidiAccess, MidiOutput, SvgLineElement};
+use web_sys::{Blob, HtmlAnchorElement, HtmlElement, MidiAccess, MidiOutput, SvgLineElement, Url};
 use yew::{events::MouseEvent, prelude::*};
 
 mod action;
+mod midi;
 mod playback;
 mod project;
 mod util;
@@ -40,6 +43,7 @@ pub enum Msg {
     SetPlayProgress(f64),
     IncrementPlayProgress,
     PlayMidiNote(u8, u8),
+    ExportMidi,
     Undo,
     Redo,
 }
@@ -388,15 +392,14 @@ impl Component for Model {
                                 note.pitch = pitch;
                             }
                             NoteOperationType::DragLeftEdge(_, _) => {
-                                let offset = offset.min(note.offset + note.length - MIN_INTERVAL);
+                                let offset = offset.min(note.offset + note.length);
 
                                 note.length += note.offset - offset;
                                 note.offset = offset;
                             }
                             NoteOperationType::DragRightEdge(_) => {
-                                let offset = offset.max(note.offset - note.length + MIN_INTERVAL);
-
-                                note.length = offset - note.offset + MIN_INTERVAL;
+                                let offset = offset.max(note.offset - note.length);
+                                note.length = offset - note.offset;
                             }
                         }
 
@@ -482,6 +485,46 @@ impl Component for Model {
             }
             Msg::PlayMidiNote(instrument, pitch) => {
                 self.play_midi_note(instrument, pitch, 1000.0);
+                false
+            }
+            Msg::ExportMidi => {
+                let project_name = self.project.name.to_owned();
+
+                web_sys::window()
+                    .and_then(|window| window.document())
+                    .map(|document| {
+                        document
+                            .create_element("a")
+                            .ok()
+                            .and_then(|anchor| anchor.dyn_into::<HtmlAnchorElement>().ok())
+                            .map(|anchor| {
+                                let midi_data = export_midi(&self.project);
+
+                                let array = Uint8Array::new_with_length(midi_data.len() as u32);
+
+                                for (i, byte) in midi_data.iter().enumerate() {
+                                    array.set_index(i as u32, *byte);
+                                }
+
+                                Blob::new_with_u8_array_sequence(&Array::of1(&array))
+                                    .and_then(|blob| Url::create_object_url_with_blob(&blob))
+                                    .map(|href| {
+                                        document.body().map(|body| {
+                                            body.append_child(&anchor).unwrap();
+
+                                            anchor.set_href(&href);
+                                            anchor.set_download(&format!("{}.mid", project_name));
+                                            anchor.click();
+
+                                            Url::revoke_object_url(&href).ok();
+
+                                            body.remove_child(&anchor).unwrap();
+                                        });
+                                    })
+                                    .ok();
+                            });
+                    });
+
                 false
             }
             Msg::Undo => {
