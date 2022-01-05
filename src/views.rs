@@ -405,13 +405,16 @@ impl Model {
 
     pub fn view_piano_keys(&self, ctx: &Context<Self>) -> Vec<Html> {
         (0..=127)
+            .rev()
             .map(|pitch| {
-                // Start from the top.
-                let pitch = 127 - pitch;
+                let instrument = self
+                    .selected_track_index
+                    .map(|index| self.project.tracks[index].instrument)
+                    .unwrap_or(0);
 
                 let onclick = ctx
                     .link()
-                    .callback(move |_: MouseEvent| Msg::PlayMidiNote(pitch));
+                    .callback(move |_: MouseEvent| Msg::PlayMidiNote(instrument, pitch));
 
                 let note_name = note_name(pitch);
 

@@ -4,10 +4,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MidiOutput;
 use yew::prelude::*;
 
-use crate::{
-    project::{Note, MIN_INTERVAL},
-    Model, Msg,
-};
+use crate::{project::MIN_INTERVAL, Model, Msg};
 
 impl Model {
     pub fn get_output_devices(&self) -> Vec<MidiOutput> {
@@ -63,40 +60,44 @@ impl Model {
 
         let link = ctx.link().clone();
 
-        let mut local_offset = self.play_offset;
+        let tracks = self.project.tracks.clone();
 
-        let all_notes = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|track| track.notes.clone())
-            .collect::<Vec<Note>>();
+        let mut local_offset = self.play_offset;
 
         self.tick_interval = Some(Interval::new(tick_interval, move || {
             let full_velocity = JsValue::from_f64(0x7f as _);
 
             let epsilon = 1e-5;
 
-            for note in &all_notes {
-                let start_offset = note.offset;
-                let end_offset = start_offset + note.length;
+            for track in &tracks {
+                let opcode = JsValue::from_f64(0xC0 as _);
+                let instrument = JsValue::from_f64(track.instrument as _);
 
-                let opcode = {
-                    if (local_offset - start_offset).abs() <= epsilon {
-                        0x90
-                    } else if (local_offset - end_offset).abs() <= epsilon {
-                        0x80
-                    } else {
-                        continue;
-                    }
-                };
-
-                let opcode = JsValue::from_f64(opcode as _);
-                let pitch = JsValue::from_f64(note.pitch as _);
-
-                let message = Array::of3(&opcode, &pitch, &full_velocity);
+                let message = Array::of2(&opcode, &instrument);
 
                 output.send(&message).ok();
+
+                for note in &track.notes {
+                    let start_offset = note.offset;
+                    let end_offset = start_offset + note.length;
+
+                    let opcode = {
+                        if (local_offset - start_offset).abs() <= epsilon {
+                            0x90
+                        } else if (local_offset - end_offset).abs() <= epsilon {
+                            0x80
+                        } else {
+                            continue;
+                        }
+                    };
+
+                    let opcode = JsValue::from_f64(opcode as _);
+                    let pitch = JsValue::from_f64(note.pitch as _);
+
+                    let message = Array::of3(&opcode, &pitch, &full_velocity);
+
+                    output.send(&message).ok();
+                }
             }
 
             link.send_message(Msg::IncrementPlayProgress);
@@ -104,7 +105,16 @@ impl Model {
         }));
     }
 
-    pub fn play_midi_note(&self, pitch: u8, duration: f64) {
+    pub fn play_midi_note(&self, instrument: u8, pitch: u8, duration: f64) {
+        let output = self.selected_output.as_ref().unwrap();
+
+        let opcode = JsValue::from_f64(0xC0 as _);
+        let instrument = JsValue::from_f64(instrument as _);
+
+        let message = Array::of2(&opcode, &instrument);
+
+        output.send(&message).ok();
+
         let full_velocity = JsValue::from_f64(0x7f as _);
 
         let message = Array::of3(
@@ -113,7 +123,6 @@ impl Model {
             &full_velocity,
         );
 
-        let output = self.selected_output.as_ref().unwrap();
         output.send(&message).ok();
 
         self.stop_midi_note(pitch, Some(duration));

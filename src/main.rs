@@ -39,7 +39,7 @@ pub enum Msg {
     TogglePlayback,
     SetPlayProgress(f64),
     IncrementPlayProgress,
-    PlayMidiNote(u8),
+    PlayMidiNote(u8, u8),
     Undo,
     Redo,
 }
@@ -144,7 +144,7 @@ impl Component for Model {
             }
             Msg::SetOutputDevice(output) => {
                 self.selected_output = Some(output);
-                self.play_midi_note(60, 1000.0);
+                self.play_midi_note(0, 60, 1000.0);
 
                 true
             }
@@ -480,8 +480,8 @@ impl Component for Model {
 
                 true
             }
-            Msg::PlayMidiNote(pitch) => {
-                self.play_midi_note(pitch, 1000.0);
+            Msg::PlayMidiNote(instrument, pitch) => {
+                self.play_midi_note(instrument, pitch, 1000.0);
                 false
             }
             Msg::Undo => {
